@@ -49,18 +49,17 @@ func NewRegistry() Registry {
 }
 
 func Register(
-	name string,
 	builderFunc PluginBuilder,
-	pluginType interface{},
+	pluginType frameworktypes.Plugin,
 	exampleArg runtime.Object,
 	pluginArgValidator PluginArgValidator,
 	pluginArgDefaulter PluginArgDefaulter,
 	registry Registry,
 ) {
-	if _, ok := registry[name]; ok {
-		klog.V(10).InfoS("Plugin already registered", "plugin", name)
+	if _, ok := registry[pluginType.Name()]; ok {
+		klog.V(10).InfoS("Plugin already registered", "plugin", pluginType.Name())
 	} else {
-		registry[name] = PluginUtilities{
+		registry[pluginType.Name()] = PluginUtilities{
 			PluginBuilder:      builderFunc,
 			PluginType:         pluginType,
 			PluginArgInstance:  exampleArg,
