@@ -1,0 +1,243 @@
+name: Kubernetes Version Bump
+
+on:
+  schedule:
+    # Run every Monday at 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Get latest Kubernetes release
+        id: k8s-version
+        run: |
+          # Get latest stable Kubernetes release
+          K8S_LATEST=$(curl -s https://api.github.com/repos/kubernetes/kubernetes/releases/latest | jq -r '.tag_name')
+          K8S_MAJOR_MINOR=$(echo $K8S_LATEST | sed -E 's/v([0-9]+\.[0-9]+).*/\1/')
+          K8S_MINOR=$(echo $K8S_MAJOR_MINOR | cut -d. -f2)
+          
+          echo "Latest Kubernetes version: $K8S_LATEST"
+          echo "k8s_latest=$K8S_LATEST" >> $GITHUB_OUTPUT
+          echo "k8s_major_minor=$K8S_MAJOR_MINOR" >> $GITHUB_OUTPUT
+          echo "k8s_minor=$K8S_MINOR" >> $GITHUB_OUTPUT
+
+      - name: Get current Descheduler version
+        id: descheduler-version
+        run: |
+          # Get current version from Chart.yaml
+          CURRENT_VERSION=$(grep '^version:' charts/descheduler/Chart.yaml | awk '{print $2}')
+          CURRENT_MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
+          
+          echo "Current Descheduler version: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "current_minor=$CURRENT_MINOR" >> $GITHUB_OUTPUT
+
+      - name: Check if version bump is needed
+        id: check-bump
+        run: |
+          K8S_MINOR=${{ steps.k8s-version.outputs.k8s_minor }}
+          DESCHEDULER_MINOR=${{ steps.descheduler-version.outputs.current_minor }}
+          
+          echo "Kubernetes minor version: $K8S_MINOR"
+          echo "Descheduler minor version: $DESCHEDULER_MINOR"
+          
+          if [ "$K8S_MINOR" -gt "$DESCHEDULER_MINOR" ]; then
+            echo "Version bump needed from 0.$DESCHEDULER_MINOR.x to 0.$K8S_MINOR.0"
+            echo "needs_bump=true" >> $GITHUB_OUTPUT
+            echo "new_version=0.$K8S_MINOR.0" >> $GITHUB_OUTPUT
+            echo "new_minor=$K8S_MINOR" >> $GITHUB_OUTPUT
+          else
+            echo "No version bump needed. Descheduler is up to date."
+            echo "needs_bump=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Go version for Kubernetes release
+        id: go-version
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          # Kubernetes 1.35 uses Go 1.25
+          # This mapping should be updated based on Kubernetes requirements
+          K8S_MINOR=${{ steps.check-bump.outputs.new_minor }}
+          
+          case $K8S_MINOR in
+            35) GO_VERSION="1.25.1" ;;
+            36) GO_VERSION="1.26.0" ;;
+            37) GO_VERSION="1.27.0" ;;
+            *) 
+              # Default: use latest Go version
+              GO_VERSION=$(curl -s "https://go.dev/VERSION?m=text" | head -n1 | sed 's/go//')
+              ;;
+          esac
+          
+          echo "Go version for Kubernetes 1.$K8S_MINOR: $GO_VERSION"
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create branch for dependency updates
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b k8s-1.${{ steps.check-bump.outputs.new_minor }}
+
+      - name: Update dependencies (PR #1827 logic)
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          NEW_VERSION=${{ steps.check-bump.outputs.new_version }}
+          K8S_VERSION=${{ steps.k8s-version.outputs.k8s_latest }}
+          GO_VERSION=${{ steps.go-version.outputs.go_version }}
+          
+          # Update go.mod
+          go mod edit -go=${GO_VERSION}
+          go mod edit -toolchain=go${GO_VERSION}
+          
+          # Update Kubernetes dependencies
+          ./hack/update-vendor.sh || true
+          
+          # If update-vendor.sh doesn't exist or fails, do it manually
+          go get k8s.io/api@${K8S_VERSION}
+          go get k8s.io/apimachinery@${K8S_VERSION}
+          go get k8s.io/apiserver@${K8S_VERSION}
+          go get k8s.io/client-go@${K8S_VERSION}
+          go get k8s.io/code-generator@${K8S_VERSION}
+          go get k8s.io/component-base@${K8S_VERSION}
+          go get k8s.io/component-helpers@${K8S_VERSION}
+          
+          go mod tidy
+          go mod vendor
+          
+          # Update Dockerfile
+          sed -i.bak "s|FROM golang:.*|FROM golang:${GO_VERSION}|" Dockerfile
+          rm -f Dockerfile.bak
+          
+          sed -i.bak "s|FROM golang:.*|FROM golang:${GO_VERSION}|" Dockerfile.dev
+          rm -f Dockerfile.dev.bak
+          
+          # Update .github/workflows/manifests.yaml
+          sed -i.bak "s|k8s-version: \[\"v[^\"]*\"\]|k8s-version: [\"${K8S_VERSION}\"]|" .github/workflows/manifests.yaml
+          rm -f .github/workflows/manifests.yaml.bak
+
+      - name: Commit and push dependency updates
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          git add .
+          git commit -m "[v${{ steps.check-bump.outputs.new_version }}] bump to kubernetes 1.${{ steps.check-bump.outputs.new_minor }} deps
+
+In preparation for v${{ steps.check-bump.outputs.new_version }}, bump libs to 1.${{ steps.check-bump.outputs.new_minor }} and go to ${{ steps.go-version.outputs.go_version }}"
+          git push origin k8s-1.${{ steps.check-bump.outputs.new_minor }}
+
+      - name: Create PR for dependency updates
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --title "[v${{ steps.check-bump.outputs.new_version }}] bump to kubernetes 1.${{ steps.check-bump.outputs.new_minor }} deps" \
+            --body "In preparation for v${{ steps.check-bump.outputs.new_version }}, bump libs to 1.${{ steps.check-bump.outputs.new_minor }} and go to ${{ steps.go-version.outputs.go_version }}
+
+## Changes
+- Updated Kubernetes dependencies from v${{ steps.descheduler-version.outputs.current_version }} to v${{ steps.check-bump.outputs.new_version }}
+- Updated Go version to ${{ steps.go-version.outputs.go_version }}
+- Updated vendor dependencies
+- Updated Dockerfiles
+
+**Automated PR created by version-bump workflow**" \
+            --base master \
+            --head k8s-1.${{ steps.check-bump.outputs.new_minor }}
+
+      - name: Wait for dependency PR to be merged
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          echo "Dependency PR created. Waiting for it to be merged before creating manifests PR..."
+          echo "Manual intervention required: Please review and merge the dependency PR first."
+          echo "Then run this workflow again or manually create the manifests PR."
+
+      - name: Create branch for manifests and docs
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          # Switch back to master to create a new branch
+          git checkout master
+          git pull origin master
+          git checkout -b v${{ steps.check-bump.outputs.new_version }}-docs-manifests
+
+      - name: Update manifests and docs (PR #1832 logic)
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          NEW_VERSION=${{ steps.check-bump.outputs.new_version }}
+          K8S_VERSION=${{ steps.k8s-version.outputs.k8s_latest }}
+          
+          # Update Chart.yaml
+          sed -i.bak "s|^version:.*|version: ${NEW_VERSION}|" charts/descheduler/Chart.yaml
+          sed -i.bak "s|^appVersion:.*|appVersion: ${NEW_VERSION}|" charts/descheduler/Chart.yaml
+          rm -f charts/descheduler/Chart.yaml.bak
+          
+          # Update .github/workflows/manifests.yaml
+          sed -i.bak "s|descheduler-version: \[\"v[^\"]*\"\]|descheduler-version: [\"v${NEW_VERSION}\"]|" .github/workflows/manifests.yaml
+          rm -f .github/workflows/manifests.yaml.bak
+          
+          # Update kubernetes manifests
+          find kubernetes -name "*.yaml" -type f -exec sed -i.bak "s|registry.k8s.io/descheduler/descheduler:v[0-9]*\.[0-9]*\.[0-9]*|registry.k8s.io/descheduler/descheduler:v${NEW_VERSION}|g" {} \;
+          find kubernetes -name "*.bak" -type f -delete
+          
+          # Update docs if needed (update-docs.sh)
+          if [ -f hack/update-docs.sh ]; then
+            ./hack/update-docs.sh || true
+          fi
+
+      - name: Commit and push manifests updates
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          git add .
+          git commit -m "[v${{ steps.check-bump.outputs.new_version }}] update docs and manifests
+
+Prep for release v${{ steps.check-bump.outputs.new_version }}"
+          git push origin v${{ steps.check-bump.outputs.new_version }}-docs-manifests
+
+      - name: Create PR for manifests and docs
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --title "[v${{ steps.check-bump.outputs.new_version }}] update docs and manifests" \
+            --body "Prep for release v${{ steps.check-bump.outputs.new_version }}
+
+## Changes
+- Updated Chart.yaml version to v${{ steps.check-bump.outputs.new_version }}
+- Updated Kubernetes manifests to use v${{ steps.check-bump.outputs.new_version }}
+- Updated workflow configurations
+- Regenerated documentation if needed
+
+**Automated PR created by version-bump workflow**
+
+This PR should be merged after the dependency update PR." \
+            --base master \
+            --head v${{ steps.check-bump.outputs.new_version }}-docs-manifests
+
+      - name: Summary
+        if: steps.check-bump.outputs.needs_bump == 'true'
+        run: |
+          echo "✅ Version bump automation completed!"
+          echo "📦 Created PR for dependency updates (similar to PR #1827)"
+          echo "📝 Created PR for manifests and docs (similar to PR #1832)"
+          echo "🎯 New version: v${{ steps.check-bump.outputs.new_version }}"
+          echo ""
+          echo "⚠️  Please review and merge the PRs in order:"
+          echo "   1. Dependency updates PR (k8s-1.${{ steps.check-bump.outputs.new_minor }} branch)"
+          echo "   2. Manifests and docs PR (v${{ steps.check-bump.outputs.new_version }}-docs-manifests branch)"
