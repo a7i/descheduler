@@ -69,6 +69,93 @@ func TestTopologySpreadConstraint(t *testing.T) {
 			args:                 RemovePodsViolatingTopologySpreadConstraintArgs{},
 		},
 		{
+			name: "3 domains, sizes [3,1,0], maxSkew=1, minDomains=3, move 1 pod",
+			nodes: []*v1.Node{
+				test.BuildTestNode("n1", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneA" }),
+				test.BuildTestNode("n2", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneB" }),
+				test.BuildTestNode("n3", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneC" }),
+			},
+			pods: createTestPods([]testPodList{
+				{
+					count:  3,
+					node:   "n1",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+				{
+					count:  1,
+					node:   "n2",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+			}),
+			expectedEvictedCount: 1,
+			namespaces:           []string{"ns1"},
+			args:                 RemovePodsViolatingTopologySpreadConstraintArgs{},
+		},
+		{
+			name: "2 domains, sizes [2,1], maxSkew=1, minDomains=3, move 1 pod",
+			nodes: []*v1.Node{
+				test.BuildTestNode("n1", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneA" }),
+				test.BuildTestNode("n2", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneB" }),
+			},
+			pods: createTestPods([]testPodList{
+				{
+					count:  2,
+					node:   "n1",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+				{
+					count:  1,
+					node:   "n2",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+			}),
+			expectedEvictedCount: 1,
+			namespaces:           []string{"ns1"},
+			args:                 RemovePodsViolatingTopologySpreadConstraintArgs{},
+		},
+		{
+			name: "4 domains, sizes [3,1,0,0], maxSkew=1, minDomains=3, move 2 pods",
+			nodes: []*v1.Node{
+				test.BuildTestNode("n1", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneA" }),
+				test.BuildTestNode("n2", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneB" }),
+				test.BuildTestNode("n3", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneC" }),
+				test.BuildTestNode("n4", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneD" }),
+			},
+			pods: createTestPods([]testPodList{
+				{
+					count:  3,
+					node:   "n1",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+				{
+					count:  1,
+					node:   "n2",
+					labels: map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(1, func(tsc *v1.TopologySpreadConstraint) {
+						tsc.MinDomains = utilptr.To[int32](3)
+					}),
+				},
+			}),
+			expectedEvictedCount: 2,
+			namespaces:           []string{"ns1"},
+			args:                 RemovePodsViolatingTopologySpreadConstraintArgs{},
+		},
+		{
 			name: "2 domains, sizes [3,1], maxSkew=1, move 1 pod to achieve [2,2]",
 			nodes: []*v1.Node{
 				test.BuildTestNode("n1", 2000, 3000, 10, func(n *v1.Node) { n.Labels["zone"] = "zoneA" }),

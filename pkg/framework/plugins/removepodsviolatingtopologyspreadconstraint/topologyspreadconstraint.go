@@ -56,6 +56,7 @@ type topology struct {
 // Fields are exported for structured logging.
 type topologySpreadConstraint struct {
 	MaxSkew            int32
+	MinDomains         int32
 	TopologyKey        string
 	Selector           labels.Selector
 	NodeAffinityPolicy v1.NodeInclusionPolicy
@@ -282,6 +283,13 @@ func topologyIsBalanced(topology map[topologyPair][]*v1.Pod, tsc topologySpreadC
 			return false
 		}
 	}
+
+	// When the number of eligible domains is less than MinDomains,
+	// the global minimum is 0, and we treat it as unbalanced if maxDomainSize > MaxSkew.
+	if int32(len(topology)) < tsc.MinDomains && int32(maxDomainSize) > tsc.MaxSkew {
+		return false
+	}
+
 	return true
 }
 
@@ -306,7 +314,12 @@ func topologyIsBalanced(topology map[topologyPair][]*v1.Pod, tsc topologySpreadC
 // [5, 5, 5, 5, 5, 5]
 // (assuming even distribution by the scheduler of the evicted pods)
 func (d *RemovePodsViolatingTopologySpreadConstraint) balanceDomains(ctx context.Context, podsForEviction map[*v1.Pod]struct{}, tsc topologySpreadConstraint, constraintTopologies map[topologyPair][]*v1.Pod, sumPods float64, nodes []*v1.Node) {
-	idealAvg := sumPods / float64(len(constraintTopologies))
+	numDomainsToConsider := int32(len(constraintTopologies))
+	if numDomainsToConsider < tsc.MinDomains {
+		numDomainsToConsider = tsc.MinDomains
+	}
+
+	idealAvg := sumPods / float64(numDomainsToConsider)
 	isEvictable := d.handle.Evictor().Filter
 	sortedDomains := sortDomains(constraintTopologies, isEvictable)
 	getPodsAssignedToNode := d.handle.GetPodsAssignedToNodeFunc()
@@ -534,6 +547,7 @@ func newTopologySpreadConstraint(constraint v1.TopologySpreadConstraint, pod *v1
 
 	tsc := topologySpreadConstraint{
 		MaxSkew:            constraint.MaxSkew,
+		MinDomains:         utilptr.Deref(constraint.MinDomains, 1), // If MinDomains is nil, we treat MinDomains as 1.
 		TopologyKey:        constraint.TopologyKey,
 		Selector:           selector,
 		NodeAffinityPolicy: utilptr.Deref(constraint.NodeAffinityPolicy, v1.NodeInclusionPolicyHonor), // If NodeAffinityPolicy is nil, we treat NodeAffinityPolicy as "Honor".
