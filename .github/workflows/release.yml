@@ -4,16 +4,17 @@ on:
   push:
     branches:
       - release-*
+      - release-*xyw*
 
 permissions:
   contents: write # allow actions to update gh-pages branch
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: linux
     steps:
       - name: Checkout
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+        uses: actions/checkout@ # v3
         with:
           fetch-depth: 0
 
@@ -28,7 +29,7 @@ jobs:
           version: v3.15.1
 
       - name: Run chart-releaser
-        uses: helm/chart-releaser-action@a917fd15b20e8b64b94d9158ad54cd6345335584 # v1.6.0
+        uses: helm/chart-releaser-action@ # v2.6.5
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           CR_RELEASE_NAME_TEMPLATE: "descheduler-helm-chart-{{ .Version }}"
